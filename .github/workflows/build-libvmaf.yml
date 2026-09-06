@@ -1,4 +1,4 @@
-name: Build latest libvmaf for Windows
+name: Build libvmaf for Windows x64
 
 on:
   workflow_dispatch:
@@ -11,47 +11,67 @@ permissions:
 
 jobs:
   check:
+    name: Check latest libvmaf release
     runs-on: ubuntu-latest
+
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      build: ${{ steps.check.outputs.build }}
+      version: ${{ steps.vmaf.outputs.version }}
+      build: ${{ steps.check-release.outputs.build }}
 
     steps:
-      - name: Get latest VMAF release
-        id: version
+      - name: Get latest VMAF version
+        id: vmaf
         shell: bash
         run: |
           VERSION=$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/Netflix/vmaf/releases/latest \
             | jq -r '.tag_name')
+
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "Failed to get latest VMAF version."
+            exit 1
+          fi
 
           echo "Latest VMAF version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check whether release already exists
-        id: check
+        id: check-release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.vmaf.outputs.version }}
         shell: bash
         run: |
-          if gh release view "${VERSION}-win-x64" >/dev/null 2>&1; then
-            echo "Release already exists."
+          TAG="${VERSION}-win-x64"
+
+          echo "Checking release: $TAG"
+
+          if gh release view "$TAG" \
+              --repo "${{ github.repository }}" \
+              >/dev/null 2>&1; then
+
+            echo "Release already exists: $TAG"
             echo "build=false" >> "$GITHUB_OUTPUT"
+
           else
-            echo "New version detected."
+
+            echo "Release does not exist: $TAG"
             echo "build=true" >> "$GITHUB_OUTPUT"
+
           fi
 
+
   build:
+    name: Build libvmaf
     needs: check
+
     if: needs.check.outputs.build == 'true'
+
     runs-on: windows-latest
 
     steps:
-      - name: Checkout VMAF
-        uses: actions/checkout@v4
+      - name: Checkout Netflix/vmaf
+        uses: actions/checkout@v6
         with:
           repository: Netflix/vmaf
           ref: ${{ needs.check.outputs.version }}
@@ -64,14 +84,16 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-nasm
+            nasm
             mingw-w64-x86_64-meson
             mingw-w64-x86_64-ninja
 
       - name: Build libvmaf
         shell: msys2 {0}
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
-          mkdir -p /c/vmaf-install
+          echo "Building libvmaf ${VERSION}"
 
           meson setup libvmaf/build libvmaf \
             --buildtype release \
@@ -81,36 +103,51 @@ jobs:
             -Denable_docs=false
 
           meson compile -C libvmaf/build
+
           meson install -C libvmaf/build
 
-      - name: Package
-        shell: pwsh
+      - name: Show installed files
+        shell: bash
+        run: |
+          echo "Installed files:"
+          find /c/vmaf-install -type f -print
+
+      - name: Package DLL
+        shell: bash
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
-          New-Item -ItemType Directory -Force -Path package
+          mkdir -p package
 
-          Copy-Item `
-            "C:\vmaf-install\bin\*.dll" `
-            "package\"
+          cp /c/vmaf-install/bin/*.dll package/
 
-          Copy-Item `
-            "LICENSE" `
-            "package\LICENSE.txt"
+          cp libvmaf/LICENSE package/
 
-          Compress-Archive `
-            -Path "package\*" `
-            -DestinationPath "libvmaf-win-x64.zip"
+          echo "Package contents:"
+          ls -lah package
 
-      - name: Create Release
+          cd package
+
+          7z a "../libvmaf-win-x64.zip" *
+
+      - name: Show package
+        shell: bash
+        run: |
+          ls -lah libvmaf-win-x64.zip
+
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check.outputs.version }}
-        shell: pwsh
+        shell: bash
         run: |
-          $tag = "${VERSION}-win-x64"
+          TAG="${VERSION}-win-x64"
 
-          gh release create $tag `
-            libvmaf-win-x64.zip `
-            --title "libvmaf $VERSION - Windows x64" `
-            --notes "Windows x64 build of Netflix/VMAF $VERSION."
+          echo "VERSION=${VERSION}"
+          echo "TAG=${TAG}"
+
+          gh release create "${TAG}" \
+            "libvmaf-win-x64.zip" \
+            --repo "${{ github.repository }}" \
+            --title "libvmaf ${VERSION} for Windows x64" \
+            --notes "Windows x64 build of Netflix libvmaf ${VERSION}."
