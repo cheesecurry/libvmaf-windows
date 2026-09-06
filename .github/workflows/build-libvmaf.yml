@@ -121,7 +121,7 @@ jobs:
 
           cp /c/vmaf-install/bin/*.dll package/
 
-          cp libvmaf/LICENSE package/
+          cp LICENSE package/
 
           echo "Package contents:"
           ls -lah package
